@@ -1,0 +1,5 @@
+person
+knife
+fight
+pistol
+rifle
