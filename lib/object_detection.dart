@@ -1,12 +1,13 @@
 import 'dart:developer';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:camera/camera.dart';
 
 class DetectionResult {
-  final Rect rect;
+  final Rect rect; // normalized coords: left, top, right, bottom (0..1)
   final String label;
   final double confidence;
 
@@ -14,75 +15,95 @@ class DetectionResult {
 }
 
 class ObjectDetection {
-  //static const String _modelPath = 'assets/custom_ssd_mobilenet_v2.tflite';
-  // static const String _modelPath = 'assets/custom_ssd_mobilenet_v2_fpn_lite_320x320.tflite';
-  static const String _modelPath = 'assets/ssd_weapon_model_v2.tflite';
-  //custom_ssd_mobilenet_v2_fpn_lite_320x320.tflite
-  static const String _labelPath = 'assets/labels.txt';
+  // Default asset model path (keeps backward compatibility)
+  //static const String _modelAssetPath = 'assets/ssd_weapon_model_v2.tflite';
+  //static const String _labelPath = 'assets/labels.txt';
 
   Interpreter? _interpreter;
   List<String>? _labels;
 
   ObjectDetection() {
-    _loadModel();
+    // Start async loading (constructor cannot await). Call ensureLoaded() before inference.
+    _loadModelFromAsset(); // non-blocking call
     _loadLabels();
-    log('Done.');
+    log('ObjectDetection constructed (loading started).');
   }
 
-  Future<void> _loadModel() async {
+  List<String>? get labels => _labels;
+
+  /// Ensure interpreter and labels are ready. Call before starting the camera stream.
+  Future<void> ensureLoaded() async {
+    if (_interpreter == null) await _loadModelFromAsset();
+    if (_labels == null) await _loadLabels();
+  }
+
+  /// Loads model that is packaged as an asset.
+  Future<void> _loadModelFromAsset() async {
+    if (_interpreter != null) return;
     log('Loading interpreter options...');
-    final interpreterOptions = InterpreterOptions();
+    final options = InterpreterOptions();
 
-    // Use XNNPACK Delegate
     if (Platform.isAndroid) {
-      interpreterOptions.addDelegate(XNNPackDelegate());
+      options.addDelegate(XNNPackDelegate());
     }
-
-    // Use Metal Delegate
     if (Platform.isIOS) {
-      interpreterOptions.addDelegate(GpuDelegate());
+      options.addDelegate(GpuDelegate());
     }
 
-    log('Loading interpreter...');
-    _interpreter =
-    await Interpreter.fromAsset(_modelPath, options: interpreterOptions);
+    log('Loading interpreter from asset...');
+    //_interpreter = await Interpreter.fromAsset(_modelAssetPath, options: options);
+    _interpreter = await Interpreter.fromFile(File("sdcard/Download/ssd_weapon_model_v2.tflite"));
+    log('Interpreter loaded from asset.');
+  }
+
+  /// If you'd rather load model from external storage path, call this with the file path.
+  Future<void> loadModelFromFile(String path) async {
+    if (_interpreter != null) {
+      // If already loaded, ignore or close & reload
+      return;
+    }
+    final file = File(path);
+    if (!file.existsSync()) {
+      throw Exception('Model file not found at $path');
+    }
+    log('Loading interpreter from file: $path');
+    final options = InterpreterOptions();
+    if (Platform.isAndroid) options.addDelegate(XNNPackDelegate());
+    if (Platform.isIOS) options.addDelegate(GpuDelegate());
+    _interpreter = await Interpreter.fromFile(file, options: options);
+    log('Interpreter loaded from file.');
   }
 
   Future<void> _loadLabels() async {
+    if (_labels != null) return;
     log('Loading labels...');
-    final labelsRaw = await rootBundle.loadString(_labelPath);
-    _labels = labelsRaw.split('\n');
+    final raw = await File("sdcard/Download/labels.txt").readAsString();
+    //final raw = await rootBundle.loadString(_labelPath);
+    _labels = raw.split('\n').where((s) => s.trim().isNotEmpty).toList();
+    log('Labels loaded (${_labels?.length}).');
   }
 
-  Uint8List analyseImage(String imagePath) {
-    log('Analysing image...');
-    // Reading image bytes from file
-    final imageData = File(imagePath).readAsBytesSync();
+  /// Public wrapper: caller has preprocessed matrix [320][320][3] normalized to [-1,1]
+  List<List<Object>> runInferenceFromImageMatrix(List<List<List<num>>> imageMatrix) {
+    return _runInference(imageMatrix);
+  }
 
-    // Decoding image
-    final image = img.decodeImage(imageData);
+  /// STILL IMAGE pipeline - unchanged (synchronous-ish)
+  Uint8List analyseImageFile(String imagePath) {
+    final bytes = File(imagePath).readAsBytesSync();
+    final image = img.decodeImage(bytes)!;
+    final resized = img.copyResize(image, width: 320, height: 320);
 
-    // Resizing image fpr model, [320, 320]
-    // If you use SSD_Mobile_Net_V2 FPN Lite 320 x 320 , please change both the width and height to 320
-    final imageInput = img.copyResize(
-      image!,
-      width: 320,
-      height: 320,
-      // width: 300,
-      // height: 300,
-    );
-
-    // Creating matrix representation, [320, 320, 3] normalized to [-1, 1]
     final imageMatrix = List.generate(
-      imageInput.height,
+      resized.height,
           (y) => List.generate(
-        imageInput.width,
+        resized.width,
             (x) {
-          final pixel = imageInput.getPixel(x, y);
+          final p = resized.getPixel(x, y);
           return [
-            ((pixel.r / 127.5) - 1.0),
-            ((pixel.g / 127.5) - 1.0),
-            ((pixel.b / 127.5) - 1.0),
+            ((p.r / 127.5) - 1.0),
+            ((p.g / 127.5) - 1.0),
+            ((p.b / 127.5) - 1.0),
           ];
         },
       ),
@@ -90,245 +111,93 @@ class ObjectDetection {
 
     final output = _runInference(imageMatrix);
 
-    // Process Tensors from the output
-    final scoresTensor = output[0].first as List<double>;
-    final boxesTensor = output[1].first as List<List<double>>;
-    final classesTensor = output[3].first as List<double>;
+    // You can reuse existing code to draw boxes on the image if needed.
+    final scores = output[0].first as List<double>;
+    final boxes = output[1].first as List<List<double>>;
+    final classes = output[3].first as List<double>;
+    final numDetections = (output[2].first as num).toInt();
 
-    log('Processing outputs...');
+    final locations = boxes
+        .map((b) => b.map((v) => (v * 320).toInt()).toList())
+        .toList(); // not used here further
 
-    // Process bounding boxes
-    final List<List<int>> locations = boxesTensor
-        .map((box) => box.map((value) => ((value * 300).toInt())).toList())
-        .toList();
-
-    log('Processing outputs... locations ${locations.toList()}');
-
-    // Convert class indices to int
-    final classes = classesTensor.map((value) => value.toInt()).toList();
-
-    log('Processing outputs... classes ${classes.toList()}');
-
-
-    // Number of detections
-    final numberOfDetections = output[2].first as double;
-
-
-    log('Processing outputs... numberOfDetections ${numberOfDetections}');
-
-    // Get classifcation with label
-    final List<String> classification = [];
-    for (int i = 0; i < numberOfDetections; i++) {
-      classification.add(_labels![classes[i]]);
-      log('Get classifcation with label ${_labels![classes[i]]}');
-    }
-
-    log('Outlining objects...');
-    for (var i = 0; i < numberOfDetections; i++) {
-      if (scoresTensor[i] > 0.4) {
-        // Rectangle drawing
-        img.drawRect(
-          imageInput,
-          x1: locations[i][1],
-          y1: locations[i][0],
-          x2: locations[i][3],
-          y2: locations[i][2],
-          color: img.ColorRgb8(0, 255, 0),
-          thickness: 3,
-        );
-
-        // Label drawing
-        img.drawString(
-          imageInput,
-          '${classification[i]} ${scoresTensor[i]}',
-          font: img.arial14,
-          x: locations[i][1] + 7,
-          y: locations[i][0] + 7,
-          color: img.ColorRgb8(0, 255, 0),
-        );
-      }
-    }
-
-    log('Done.');
-    return img.encodeJpg(imageInput);
+    // draw boxes on resized as needed...
+    return img.encodeJpg(resized);
   }
 
-  /// Analyses a CameraImage (from the camera package) for object detection.
-  /// Returns a JPEG Uint8List with detected boxes and labels drawn.
-  //Future<Uint8List> analyseCameraImage(CameraImage cameraImage) async {
-  Future<List<DetectionResult>> analyseCameraImage(CameraImage cameraImage) async {
-    log('Analysing CameraImage...');
-    // Convert YUV420 to RGB using image package
-    final int width = cameraImage.width;
-    final int height = cameraImage.height;
-    // Prepare a buffer for RGB pixels
-    final img.Image rgbImage = img.Image(width: width, height: height);
+  /// Internal inference runner (reuses the interpreter).
+  List<List<Object>> _runInference(List<List<List<num>>> imageMatrix) {
+    if (_interpreter == null) throw Exception('Interpreter not initialized');
 
-    // YUV420 to RGB conversion (planar)
-    final int uvRowStride = cameraImage.planes[1].bytesPerRow;
-    final int uvPixelStride = cameraImage.planes[1].bytesPerPixel ?? 1;
-
-    final Uint8List y = cameraImage.planes[0].bytes;
-    final Uint8List u = cameraImage.planes[1].bytes;
-    final Uint8List v = cameraImage.planes[2].bytes;
-
-    for (int h = 0; h < height; h++) {
-      for (int w = 0; w < width; w++) {
-        final int uvIndex =
-            (uvRowStride * (h ~/ 2)) + (uvPixelStride * (w ~/ 2));
-        final int yIndex = h * cameraImage.planes[0].bytesPerRow + w;
-        final int yp = y[yIndex];
-        final int up = u[uvIndex];
-        final int vp = v[uvIndex];
-
-        // Convert YUV to RGB
-        int r = (yp + (1.370705 * (vp - 128))).round();
-        int g = (yp - (0.337633 * (up - 128)) - (0.698001 * (vp - 128))).round();
-        int b = (yp + (1.732446 * (up - 128))).round();
-        r = r.clamp(0, 255);
-        g = g.clamp(0, 255);
-        b = b.clamp(0, 255);
-        rgbImage.setPixelRgb(w, h, r, g, b);
-      }
-    }
-
-    // Resize to 320x320
-    final img.Image imageInput = img.copyResize(
-      rgbImage,
-      width: 320,
-      height: 320,
-    );
-
-    // Create matrix representation, [320, 320, 3] normalized to [-1, 1]
-    final imageMatrix = List.generate(
-      imageInput.height,
-      (y) => List.generate(
-        imageInput.width,
-        (x) {
-          final pixel = imageInput.getPixel(x, y);
-          return [
-            ((pixel.r / 127.5) - 1.0),
-            ((pixel.g / 127.5) - 1.0),
-            ((pixel.b / 127.5) - 1.0),
-          ];
-        },
-      ),
-    );
-
-    final output = _runInference(imageMatrix);
-
-    final scoresTensor = output[0].first as List<double>;
-    final boxesTensor = output[1].first as List<List<double>>;
-    final classesTensor = output[3].first as List<double>;
-    final numberOfDetections = output[2].first as double;
-
-    final results = <DetectionResult>[];
-    for (int i = 0; i < numberOfDetections; i++) {
-      if (scoresTensor[i] > 0.4) {
-        final classIndex = classesTensor[i].toInt();
-        final label = _labels![classIndex];
-
-        // Bounding boxes are normalized [ymin, xmin, ymax, xmax] in [0,1].
-        final box = boxesTensor[i];
-        // final rect = Rect.fromLTRB(
-        //   box[1] * cameraImage.width,
-        //   box[0] * cameraImage.height,
-        //   box[3] * cameraImage.width,
-        //   box[2] * cameraImage.height,
-        // );
-
-        final rect = Rect.fromLTRB(
-          box[0], // xmin
-          box[1], // ymin
-          box[2], // xmax
-          box[3], // ymax
-        );
-
-        results.add(DetectionResult(rect, label, scoresTensor[i]));
-      }
-    }
-    return results;
-
-    // final output = _runInference(imageMatrix);
-    //
-    // // Process Tensors from the output
-    // final scoresTensor = output[0].first as List<double>;
-    // final boxesTensor = output[1].first as List<List<double>>;
-    // final classesTensor = output[3].first as List<double>;
-    //
-    // log('Processing outputs...');
-    //
-    // // Process bounding boxes
-    // final List<List<int>> locations = boxesTensor
-    //     .map((box) => box.map((value) => ((value * 300).toInt())).toList())
-    //     .toList();
-    //
-    // // Convert class indices to int
-    // final classes = classesTensor.map((value) => value.toInt()).toList();
-    //
-    // // Number of detections
-    // final numberOfDetections = output[2].first as double;
-    //
-    // // Get classification with label
-    // final List<String> classification = [];
-    // for (int i = 0; i < numberOfDetections; i++) {
-    //   classification.add(_labels![classes[i]]);
-    //   log('Get classification with label ${_labels![classes[i]]}');
-    // }
-    //
-    // log('Outlining objects...');
-    // for (var i = 0; i < numberOfDetections; i++) {
-    //   if (scoresTensor[i] > 0.4) {
-    //     // Rectangle drawing
-    //     img.drawRect(
-    //       imageInput,
-    //       x1: locations[i][1],
-    //       y1: locations[i][0],
-    //       x2: locations[i][3],
-    //       y2: locations[i][2],
-    //       color: img.ColorRgb8(0, 255, 0),
-    //       thickness: 3,
-    //     );
-    //
-    //     // Label drawing
-    //     img.drawString(
-    //       imageInput,
-    //       '${classification[i]} ${scoresTensor[i]}',
-    //       font: img.arial14,
-    //       x: locations[i][1] + 7,
-    //       y: locations[i][0] + 7,
-    //       color: img.ColorRgb8(0, 255, 0),
-    //     );
-    //   }
-    // }
-    //
-    // log('Done.');
-    // return img.encodeJpg(imageInput);
-  }
-
-  List<List<Object>> _runInference(
-      List<List<List<num>>> imageMatrix,
-      ) {
-    log('Running inference...');
-
-    // Set input tensor [1, 320, 320, 3]
     final input = [imageMatrix];
 
-    // Set output tensor
-    // Scores: [1, 10],
-    // Locations: [1, 10, 4],
-    // Number of detections: [1],
-    // Classes: [1, 10],
     final output = {
-      0: [List<num>.filled(10, 0)],
-      1: [List<List<num>>.filled(10, List<num>.filled(4, 0))],
-      2: [0.0],
-      3: [List<num>.filled(10, 0)],
+      0: [List<double>.filled(10, 0.0)], // scores
+      1: [List<List<double>>.filled(10, List<double>.filled(4, 0.0))], // boxes
+      2: [0.0], // num detections
+      3: [List<double>.filled(10, 0.0)], // classes
     };
-    log('Running inference...output ${output}');
+
     _interpreter!.runForMultipleInputs([input], output);
 
-    log('Running inference...output.values.toList() ${output.values.toList()}');
+    // Convert typed lists to runtime types expected by caller
     return output.values.toList();
   }
+}
+
+/// Top-level function — required by `compute()` (must be top-level or static).
+/// Converts CameraImage plane bytes to a normalized image matrix [320][320][3].
+List<List<List<num>>> runConvertCameraImageToMatrix(Map<String, dynamic> params) {
+  final int width = params['width'] as int;
+  final int height = params['height'] as int;
+  final List<dynamic> planesDynamic = params['planes'] as List<dynamic>;
+
+  final Uint8List y = planesDynamic[0] as Uint8List;
+  final Uint8List u = planesDynamic[1] as Uint8List;
+  final Uint8List v = planesDynamic[2] as Uint8List;
+
+  final List<dynamic> bytesPerRowList = params['bytesPerRow'] as List<dynamic>;
+  final List<dynamic> bytesPerPixelList = params['bytesPerPixel'] as List<dynamic>;
+
+  final int yRowStride = bytesPerRowList[0] as int;
+  final int uvRowStride = bytesPerRowList[1] as int;
+  final int uvPixelStride = bytesPerPixelList[1] as int;
+
+  final img.Image rgbImage = img.Image(width: width, height: height);
+
+  for (int h = 0; h < height; h++) {
+    for (int w = 0; w < width; w++) {
+      final int uvIndex = (uvRowStride * (h ~/ 2)) + (uvPixelStride * (w ~/ 2));
+      final int yIndex = h * yRowStride + w;
+
+      final int yp = y[yIndex];
+      final int up = u[uvIndex];
+      final int vp = v[uvIndex];
+
+      int r = (yp + (1.370705 * (vp - 128))).round();
+      int g = (yp - (0.337633 * (up - 128)) - (0.698001 * (vp - 128))).round();
+      int b = (yp + (1.732446 * (up - 128))).round();
+
+      r = r.clamp(0, 255);
+      g = g.clamp(0, 255);
+      b = b.clamp(0, 255);
+
+      rgbImage.setPixelRgb(w, h, r, g, b);
+    }
+  }
+
+  final img.Image imageInput = img.copyResize(rgbImage, width: 320, height: 320);
+
+  final imageMatrix = List.generate(
+    imageInput.height,
+        (yCoord) => List.generate(
+      imageInput.width,
+          (xCoord) {
+        final pixel = imageInput.getPixel(xCoord, yCoord);
+        return [((pixel.r / 127.5) - 1.0), ((pixel.g / 127.5) - 1.0), ((pixel.b / 127.5) - 1.0)];
+      },
+    ),
+  );
+
+  return imageMatrix;
 }
