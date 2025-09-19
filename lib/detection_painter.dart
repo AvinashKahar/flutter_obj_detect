@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_obj_detect/object_detection.dart';
+import 'object_detection.dart';
 
 class DetectionPainter extends CustomPainter {
   final List<DetectionResult> detections;
@@ -10,7 +10,7 @@ class DetectionPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.green
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
+      ..strokeWidth = 2;
 
     final textStyle = const TextStyle(
       color: Colors.green,
@@ -19,14 +19,12 @@ class DetectionPainter extends CustomPainter {
     );
 
     for (var d in detections) {
-      // Scale from normalized (0–1) to widget size
       final rect = Rect.fromLTRB(
         d.rect.left * size.width,
         d.rect.top * size.height,
         d.rect.right * size.width,
         d.rect.bottom * size.height,
       );
-
       canvas.drawRect(rect, paint);
 
       final tp = TextPainter(
@@ -42,5 +40,6 @@ class DetectionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant DetectionPainter oldDelegate) =>
+      oldDelegate.detections != detections;
 }
