@@ -8,15 +8,16 @@ class DetectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.green
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-
+    final paint = Paint()..color = Colors.green..style = PaintingStyle.stroke..strokeWidth = 3;
     final textStyle = const TextStyle(color: Colors.green, fontSize: 14, backgroundColor: Colors.white);
 
     for (var d in detections) {
-      final rect = Rect.fromLTRB(d.rect.left * size.width, d.rect.top * size.height, d.rect.right * size.width, d.rect.bottom * size.height);
+      final rect = Rect.fromLTRB(
+        d.rect.left * size.width,
+        d.rect.top * size.height,
+        d.rect.right * size.width,
+        d.rect.bottom * size.height,
+      );
       canvas.drawRect(rect, paint);
       final tp = TextPainter(
         text: TextSpan(text: '${d.label} ${(d.confidence * 100).toStringAsFixed(1)}%', style: textStyle),
