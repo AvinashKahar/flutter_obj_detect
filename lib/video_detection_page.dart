@@ -1,4 +1,5 @@
 // lib/video_detection_page.dart
+// --- small updates to use Uint8List tensor (uint8) ---
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // compute
@@ -16,99 +17,93 @@ class VideoDetectionPage extends StatefulWidget {
 }
 
 class _VideoDetectionPageState extends State<VideoDetectionPage> {
+  String TAG = "#flutter_obj_detect/video_detection_page";
   CameraController? _cameraController;
-  List<DetectionResult> _detections = [];
   bool _isDetecting = false;
-  DateTime _lastDetectionTime = DateTime.fromMillisecondsSinceEpoch(0);
-
-  final int throttleMs = 1000; // 1 frame/sec
+  List<DetectionResult> _detections = [];
 
   @override
   void initState() {
     super.initState();
-    _start();
+    _initCamera();
   }
 
-  Future<void> _start() async {
-    //await widget.objectDetection.ensureInterpreterInitialized();
-
+  Future<void> _initCamera() async {
     final cameras = await availableCameras();
     final camera = cameras.first;
     _cameraController = CameraController(camera, ResolutionPreset.medium, enableAudio: false);
     await _cameraController!.initialize();
 
-    _cameraController!.startImageStream(_processCameraImage);
-    if (mounted) setState(() {});
-  }
+    // set stream
+    await _cameraController!.startImageStream((CameraImage img) async {
+      if (_isDetecting) return;
+      _isDetecting = true;
+      try {
+        // Convert camera Image via compute (this map returns Uint8List now)
+        final preprocessStart = DateTime.now().millisecondsSinceEpoch;
 
-  Future<void> _processCameraImage(CameraImage image) async {
-    final now = DateTime.now();
-    if (_isDetecting) return;
-    if (now.difference(_lastDetectionTime).inMilliseconds < throttleMs) return;
+        final params = <String, dynamic>{
+          'width': img.width,
+          'height': img.height,
+          'p0': img.planes[0].bytes,
+          'p1': img.planes[1].bytes,
+          'p2': img.planes[2].bytes,
+          'row0': img.planes[0].bytesPerRow,
+          'row1': img.planes[1].bytesPerRow,
+          'pixelStride1': img.planes[1].bytesPerPixel ?? 1
+        };
 
-    _isDetecting = true;
-    _lastDetectionTime = now;
+        final preResult = await compute(runConvertCameraImageToMatrix, params);
+        final preprocessEnd = DateTime.now().millisecondsSinceEpoch;
 
-    try {
-      final params = <String, dynamic>{
-        'width': image.width,
-        'height': image.height,
-        'p0': image.planes[0].bytes,
-        'p1': image.planes[1].bytes,
-        'p2': image.planes[2].bytes,
-        'row0': image.planes[0].bytesPerRow,
-        'row1': image.planes[1].bytesPerRow,
-        'pixelStride1': image.planes[1].bytesPerPixel ?? 1,
-      };
+        final Uint8List tensor = preResult['tensor'] as Uint8List;
 
-      final preprocessStart = DateTime.now().millisecondsSinceEpoch;
-      final Map<String, dynamic> preResult = await compute(runConvertCameraImageToMatrix, params);
-      final preprocessEnd = DateTime.now().millisecondsSinceEpoch;
+        final inferenceStart = DateTime.now().millisecondsSinceEpoch;
+        final output = widget.objectDetection.runInferenceFromTensor(tensor);
+        final inferenceEnd = DateTime.now().millisecondsSinceEpoch;
 
-      final Float32List tensor = preResult['tensor'] as Float32List;
+        final preprocessMs = preprocessEnd - preprocessStart;
+        final inferenceMs = inferenceEnd - inferenceStart;
+        final totalMs = inferenceEnd - preprocessStart;
 
-      final inferenceStart = DateTime.now().millisecondsSinceEpoch;
-      final output = widget.objectDetection.runInferenceFromTensor(tensor);
-      final inferenceEnd = DateTime.now().millisecondsSinceEpoch;
+        debugPrint("$TAG Delegate used: ${widget.objectDetection.delegateUsed}");
+        debugPrint("$TAG Preprocess: ${preprocessMs} ms | Inference: ${inferenceMs} ms | Total: ${totalMs} ms}");
+        FileLogger.log("Delegate used: ${widget.objectDetection.delegateUsed}");
+        FileLogger.log("Preprocess: ${preprocessMs} ms | Inference: ${inferenceMs} ms | Total: ${totalMs} ms}");
 
-      final preprocessMs = preprocessEnd - preprocessStart;
-      final inferenceMs = inferenceEnd - inferenceStart;
-      final totalMs = inferenceEnd - preprocessStart;
+        // output is remapped to: [scores, boxes, numDetections, classes]
+        final scores = (output[0] as dynamic).isNotEmpty
+            ? (output[0] as List).first as List<double>
+            : <double>[];
+        final boxes = (output[1] as List).first as List<List<double>>;
+        final numDetections = ((output[2] as List).first as num).toInt();
+        final classes = (output[3] as List).first as List<double>;
 
-      FileLogger.log("Delegate used: ${widget.objectDetection.delegateUsed}");
-      FileLogger.log("Preprocess: ${preprocessMs} ms | Inference: ${inferenceMs} ms | Total: ${totalMs} ms}");
-
-      debugPrint('Delegate used: ${widget.objectDetection.delegateUsed}');
-      debugPrint('Preprocess: ${preprocessMs} ms | Inference: ${inferenceMs} ms | Total: ${totalMs} ms');
-
-      final scores = output[0].first as List<double>;
-      final boxes = output[1].first as List<List<double>>;
-      final numDetections = (output[2].first as num).toInt();
-      final classes = output[3].first as List<double>;
-
-      final List<DetectionResult> results = [];
-      for (int i = 0; i < numDetections; i++) {
-        if (scores[i] > 0.4) {
+        final List<DetectionResult> results = [];
+        for (int i = 0; i < numDetections; i++) {
+          final score = (i < scores.length) ? scores[i] : 0.0;
+          if (score < 0.4) continue; // threshold; tune as needed
           final cls = classes[i].toInt();
           final label = (widget.objectDetection.labels != null && cls < widget.objectDetection.labels!.length)
               ? widget.objectDetection.labels![cls]
               : 'class_$cls';
           final b = boxes[i];
+          // b format assumed [ymin, xmin, ymax, xmax]
           final rect = Rect.fromLTRB(b[1], b[0], b[3], b[2]);
-          results.add(DetectionResult(rect, label, scores[i]));
+          results.add(DetectionResult(rect, label, score));
         }
+
+        debugPrint('$TAG Detections: ${results.length}');
+        FileLogger.log("Detections: ${results.length}");
+
+        if (mounted) setState(() => _detections = results);
+      } catch (e, st) {
+        debugPrint('$TAG Frame processing error: $e\n$st');
+        FileLogger.log("Frame processing error: $e\n$st");
+      } finally {
+        _isDetecting = false;
       }
-
-      debugPrint('Detections: ${results.length}');
-      FileLogger.log("Detections: ${results.length}");
-
-      if (mounted) setState(() => _detections = results);
-    } catch (e, st) {
-      FileLogger.log("Frame processing error: $e\n$st");
-      debugPrint('Frame processing error: $e\n$st');
-    } finally {
-      _isDetecting = false;
-    }
+    });
   }
 
   @override
@@ -122,8 +117,8 @@ class _VideoDetectionPageState extends State<VideoDetectionPage> {
           children: [
             CameraPreview(_cameraController!),
             CustomPaint(painter: DetectionPainter(_detections)
-        ),
-      ]),
+            ),
+          ]),
     );
   }
 

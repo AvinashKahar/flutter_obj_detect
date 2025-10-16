@@ -12,7 +12,7 @@ class UserInput extends StatefulWidget {
 }
 
 class _UserInputState extends State<UserInput> {
-
+  String TAG = "#flutter_obj_detect/user_input";
   TextEditingController ctrModelController = TextEditingController();
   TextEditingController ctrLabelController = TextEditingController();
   final ObjectDetection objectDetection = ObjectDetection();
@@ -24,23 +24,23 @@ class _UserInputState extends State<UserInput> {
   void initState() {
     super.initState();
     SchedulerBinding.instance.addPostFrameCallback((_) async {
-      ctrModelController.text = "ssd_weapon_model_v2";
-      ctrLabelController.text = "labels";
+      ctrModelController.text = "efficientdet_lite2";
+      ctrLabelController.text = "labelmap";
     });
   }
 
 
   @override
   void dispose() {
-    objectDetection.close();
+    // objectDetection.close();
     super.dispose();
   }
 
 
   initializeInterpreter(String txtModelController, String txtLabelController) async {
     try {
-      final modelPath = '/storage/emulated/0/Download/$txtModelController.tflite';
-      final labelsPath = '/storage/emulated/0/Download/$txtLabelController.txt';
+      final modelPath = '/storage/emulated/0/Download/HumanDetectionTFLITE/$txtModelController.tflite';
+      final labelsPath = '/storage/emulated/0/Download/HumanDetectionTFLITE/$txtLabelController.txt';
 
       // Load interpreter (tries NNAPI/GPU/XNNPACK inside)
       await objectDetection.loadModelFromFile(modelPath);
@@ -65,8 +65,8 @@ class _UserInputState extends State<UserInput> {
 
 
     } catch (e, st) {
+      debugPrint('$TAG Startup error: $e\n$st');
       FileLogger.log("Startup error: $e\n$st");
-      debugPrint('Startup error: $e\n$st');
       // setState(() {
       //   _status = 'Init failed: $e';
       // });

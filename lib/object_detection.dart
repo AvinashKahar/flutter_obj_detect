@@ -1,13 +1,14 @@
 // lib/object_detection.dart
+// --- UPDATED for uint8 EfficientDet-Lite2 ---
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:flutter_obj_detect/file_logger.dart';
 
-
-/// DetectionResult for UI painting
+/// DetectionResult for UI painting (unchanged)
 class DetectionResult {
   final Rect rect; // normalized [0..1]
   final String label;
@@ -16,27 +17,24 @@ class DetectionResult {
 }
 
 class ObjectDetection {
+  String TAG = "#flutter_obj_detect/ObjectDetection";
   Interpreter? _interpreter;
+  String? _delegateUsed;
   List<String>? _labels;
-  String _delegateUsed = 'none';
 
-  ObjectDetection();
+  String? get delegateUsed => _delegateUsed;
+  List<String>? get labels => _labels;
 
-  String get delegateUsed => _delegateUsed;
-
-  /// Try to load interpreter from external file and select best delegate available.
   Future<void> loadModelFromFile(String path) async {
     log('loadModelFromFile path $path');
 
     final f = File(path);
     if (!f.existsSync()) {
+      debugPrint('$TAG Model file not found at $path');
       FileLogger.log("Model file not found at $path");
       throw Exception('Model file not found at $path');
     }
 
-    // We will attempt to use NNAPI first, then GPU, then XNNPACK.
-    // Note: using multiple delegates at once may conflict; we attempt in order.
-    // We create options for each attempt separately.
     Exception? lastError;
 
     // 1) Try NNAPI (Android only)
@@ -46,66 +44,36 @@ class ObjectDetection {
         opts.useNnApiForAndroid = true;
         _interpreter = await Interpreter.fromFile(f, options: opts);
         _delegateUsed = 'NNAPI';
+        debugPrint('$TAG TFModel/Interpreter loaded with NNAPI delegate. from $path');
         FileLogger.log("TFModel/Interpreter loaded with NNAPI delegate. from $path");
-        log('Interpreter loaded with NNAPI delegate.');
+        //log('Interpreter loaded with NNAPI delegate.');
         return;
       } catch (e) {
         lastError = e as Exception;
+        debugPrint('$TAG NNAPI load failed: $e');
         FileLogger.log("NNAPI load failed: $e");
-        log('NNAPI load failed: $e');
+        //log('NNAPI load failed: $e');
       }
     }
 
-    // 2) Try GPU delegate
-    // try {
-    //   final opts = InterpreterOptions();
-    //   try {
-    //     // GpuDelegate is available in tflite_flutter package
-    //     opts.addDelegate(GpuDelegate());
-    //   } catch (e) {
-    //     FileLogger.log("GpuDelegate not available on this platform/version: $e");
-    //     log('GpuDelegate not available on this platform/version: $e');
-    //   }
-    //   _interpreter = await Interpreter.fromFile(f, options: opts);
-    //   _delegateUsed = 'GPU';
-    //   FileLogger.log("Interpreter loaded with GPU delegate.");
-    //   log('Interpreter loaded with GPU delegate.');
-    //   return;
-    // } catch (e) {
-    //   lastError = e as Exception?;
-    //   FileLogger.log("GPU load failed: $e");
-    //   log('GPU load failed: $e');
-    // }
-    //
-    // // 3) Fallback to XNNPack (CPU optimized)
-    // try {
-    //   final opts = InterpreterOptions();
-    //   opts.addDelegate(XNNPackDelegate());
-    //   _interpreter = await Interpreter.fromFile(f, options: opts);
-    //   _delegateUsed = 'XNNPACK';
-    //   FileLogger.log("Interpreter loaded with XNNPACK delegate.");
-    //   log('Interpreter loaded with XNNPACK delegate.');
-    //   return;
-    // } catch (e) {
-    //   lastError = e as Exception?;
-    //   FileLogger.log("XNNPACK load failed: $e");
-    //   log('XNNPACK load failed: $e');
-    // }
+    // 2) Try GPU delegate (commented in original; user can enable if desired)
+    // 3) Try to load with default options (XNNPACK/CPU)
+    try {
+      final opts = InterpreterOptions();
+      _interpreter = await Interpreter.fromFile(f, options: opts);
+      _delegateUsed = 'CPU';
+      debugPrint('$TAG TFModel/Interpreter loaded on CPU (fallback). from $path');
+      FileLogger.log("TFModel/Interpreter loaded on CPU (fallback). from $path");
+      //log('Interpreter loaded on CPU fallback.');
+      return;
+    } catch (e) {
+      lastError = e as Exception;
+      debugPrint('$TAG CPU fallback load failed: $e');
+      FileLogger.log("CPU fallback load failed: $e");
+      //log('CPU fallback load failed: $e');
+    }
 
-    // 4) Try asset fallback (no delegate)
-    // try {
-    //   final opts = InterpreterOptions();
-    //   _interpreter = await Interpreter.fromAsset('assets/ssd_weapon_model_v2.tflite', options: opts);
-    //   _delegateUsed = 'AssetFallback';
-    //   FileLogger.log("Interpreter loaded from asset fallback (no delegate).");
-    //   log('Interpreter loaded from asset fallback (no delegate).');
-    //   return;
-    // } catch (e) {
-    //   lastError = e as Exception?;
-    //   FileLogger.log("Asset fallback failed: $e");
-    //   log('Asset fallback failed: $e');
-    // }
-
+    debugPrint('$TAG Failed to load interpreter. Last error: $lastError');
     FileLogger.log("Failed to load interpreter. Last error: $lastError");
     throw Exception('Failed to load interpreter. Last error: $lastError');
   }
@@ -115,87 +83,123 @@ class ObjectDetection {
 
     final f = File(path);
     if (!f.existsSync()) {
+      debugPrint('$TAG Labels file not found at $path (you can keep labels in assets).');
       FileLogger.log("Labels file not found at $path (you can keep labels in assets).");
-      log('Labels file not found at $path (you can keep labels in assets).');
+      //log('Labels file not found at $path (you can keep labels in assets).');
       return;
     }
     final raw = await f.readAsString();
     _labels = raw.split('\n').where((s) => s.trim().isNotEmpty).toList();
+    debugPrint('$TAG Labels loaded (${_labels?.length}) from $path');
     FileLogger.log("Labels loaded (${_labels?.length}) from $path");
-    log('Labels loaded (${_labels?.length}) from $path');
+    //log('Labels loaded (${_labels?.length}) from $path');
   }
 
-  /// If interpreter not loaded from file, fallback to asset
-  // Future<void> ensureInterpreterInitialized() async {
-  //   if (_interpreter == null) {
-  //     final opts = InterpreterOptions();
-  //     try {
-  //       opts.addDelegate(XNNPackDelegate());
-  //     } catch (_) {}
-  //     _interpreter = await Interpreter.fromAsset('assets/ssd_weapon_model_v2.tflite', options: opts);
-  //     _delegateUsed = 'AssetFallback';
-  //     FileLogger.log("Interpreter loaded from asset fallback.");
-  //     log('Interpreter loaded from asset fallback.');
-  //   }
-  //   if (_labels == null) {
-  //     try {
-  //       final raw = await rootBundle.loadString('assets/labels.txt');
-  //       _labels = raw.split('\n').where((s) => s.trim().isNotEmpty).toList();
-  //       FileLogger.log("Labels loaded (${_labels?.length}) from assets.");
-  //       log('Labels loaded (${_labels?.length}) from assets.');
-  //     } catch (_) {}
-  //   }
-  // }
-
-  List<String>? get labels => _labels;
-
-  void close() {
-    try {
-      _interpreter?.close();
-      _interpreter = null;
-    } catch (_) {}
-  }
-
-  /// Accept a flattened Float32List [320*320*3] and perform inference.
-  /// Internally we convert to nested shape [1][320][320][3] as tflite_flutter requires.
-  List<List<Object>> runInferenceFromTensor(Float32List tensor) {
+  /// Run inference given a Uint8List tensor produced by runConvertCameraImageToMatrix.
+  /// Returns a List in the same format your VideoDetectionPage expects:
+  /// [scores, boxes, numDetections, classes]
+  List<dynamic> runInferenceFromTensor(Uint8List tensor) {
     if (_interpreter == null) {
+      debugPrint('$TAG Interpreter not initialized');
       FileLogger.log("Interpreter not initialized");
       throw Exception('Interpreter not initialized');
     }
 
-    // Convert flattened Float32List into nested List structure [1][H][W][C] (double)
-    // Note: conversion cost exists but is small relative to interpreter runtime on your device.
-    const int H = 320;
-    const int W = 320;
+    // Build nested input [1][H][W][C] with int values (0..255)
+    const int H = 448;
+    const int W = 448;
     const int C = 3;
     int idx = 0;
-
-    final List<List<List<List<double>>>> input = List.generate(1, (_) {
+    final input = List.generate(1, (_) {
       return List.generate(H, (y) {
         return List.generate(W, (x) {
-          final r = tensor[idx++].toDouble();
-          final g = tensor[idx++].toDouble();
-          final b = tensor[idx++].toDouble();
-          return <double>[r, g, b];
+          final r = tensor[idx++];
+          final g = tensor[idx++];
+          final b = tensor[idx++];
+          // Many uint8 tflite models expect RGB in [0..255]
+          return <int>[r, g, b];
         });
       });
     });
 
-    final output = {
-      0: [List<double>.filled(10, 0.0)],
-      1: [List<List<double>>.filled(10, List<double>.filled(4, 0.0))],
-      2: [0.0],
-      3: [List<double>.filled(10, 0.0)],
+    // Prepare output containers. EfficientDet-Lite exported TFLite commonly has
+    // outputs in the order: 0: boxes, 1: classes, 2: scores, 3: num_detections
+    // But your app's UI expects the following order:
+    // [scores, boxes, numDetections, classes]
+    // So we will ask the interpreter for 4 outputs and then remap them below.
+
+    // Ask the interpreter what shape its output tensors actually have
+    final boxesShape   = _interpreter!.getOutputTensor(0).shape; // e.g. [1, 25, 4]
+    final classesShape = _interpreter!.getOutputTensor(1).shape; // e.g. [1, 25]
+    final scoresShape  = _interpreter!.getOutputTensor(2).shape; // e.g. [1, 25]
+
+    final numDetections = boxesShape[1]; // typically 25 for EfficientDet-Lite2
+
+    final outputBoxes   = List.generate(1, (_) =>
+        List.generate(numDetections, (_) => List<double>.filled(4, 0.0)));
+    final outputClasses = List.generate(1, (_) =>
+    List<double>.filled(numDetections, 0.0));
+    final outputScores  = List.generate(1, (_) =>
+    List<double>.filled(numDetections, 0.0));
+    final outputNum = List<double>.filled(1, 0.0);
+
+    final outputs = <int, Object>{
+      0: outputBoxes, // expected from model: boxes
+      1: outputClasses, // expected from model: classes
+      2: outputScores, // expected from model: scores
+      3: outputNum, // expected from model: num_detections
     };
 
-    _interpreter!.runForMultipleInputs([input], output);
-    return output.values.toList();
+    _interpreter!.runForMultipleInputs([input], outputs);
+
+    // Remap to UI expected order: [scores, boxes, numDetections, classes]
+    // final remapped = <dynamic>[];
+    // remapped.add(outputs[2] as List<List<List<double>>>); // scores
+    // remapped.add(outputs[0] as List<List<List<double>>>); // boxes
+    // remapped.add(outputs[3] as List<double>); // num detections
+    // remapped.add(outputs[1] as List<List<double>>); // classes
+
+    // ---- Fix for 2D vs 3D model output mismatch ----
+    final remapped = <dynamic>[];
+
+// Scores tensor: usually [1, N]  → flatten if needed
+    var scoresTensor = outputs[2];
+    if (scoresTensor is List<List<double>>) {
+      remapped.add(scoresTensor); // [1, N]
+    } else if (scoresTensor is List<double>) {
+      remapped.add([scoresTensor]); // wrap to [1, N]
+    } else {
+      remapped.add([<double>[]]);
+    }
+
+// Boxes tensor: some models give [N,4], others [1,N,4]
+    var boxesTensor = outputs[0];
+    if (boxesTensor is List<List<List<double>>>) {
+      remapped.add(boxesTensor);
+    } else if (boxesTensor is List<List<double>>) {
+      remapped.add([boxesTensor]); // wrap 2D → 3D
+    } else {
+      remapped.add([<List<double>>[]]);
+    }
+
+// num_detections is always 1D
+    remapped.add(outputs[3] as List<double>);
+
+// Classes tensor: usually [1,N] or [N]
+    var classesTensor = outputs[1];
+    if (classesTensor is List<List<double>>) {
+      remapped.add(classesTensor);
+    } else if (classesTensor is List<double>) {
+      remapped.add([classesTensor]);
+    } else {
+      remapped.add([<double>[]]);
+    }
+
+    return remapped;
   }
 }
 
-
-
+/// Convert camera image YUV planes -> Uint8List tensor shaped [320*320*3] (RGB)
 Map<String, dynamic> runConvertCameraImageToMatrix(Map<String, dynamic> params) {
   final int srcW = params['width'] as int;
   final int srcH = params['height'] as int;
@@ -208,8 +212,8 @@ Map<String, dynamic> runConvertCameraImageToMatrix(Map<String, dynamic> params) 
   final int row1 = params['row1'] as int;
   final int pixelStride1 = params['pixelStride1'] as int;
 
-  const int dstSize = 320;
-  final Float32List tensor = Float32List(dstSize * dstSize * 3);
+  const int dstSize = 448;
+  final Uint8List tensor = Uint8List(dstSize * dstSize * 3);
   int ti = 0;
 
   // Precompute ratios to map dst -> src (nearest neighbor)
@@ -223,7 +227,6 @@ Map<String, dynamic> runConvertCameraImageToMatrix(Map<String, dynamic> params) 
     for (int x = 0; x < dstSize; x++) {
       final int srcX = (x * xRatio).toInt().clamp(0, srcW - 1);
 
-      // compute indices for Y and UV
       final int yIndex = yRow + srcX;
       final int uvIndex = uvRow + (srcX >> 1) * pixelStride1;
 
@@ -231,22 +234,19 @@ Map<String, dynamic> runConvertCameraImageToMatrix(Map<String, dynamic> params) 
       final int up = p1[uvIndex];
       final int vp = p2[uvIndex];
 
-      // YUV to RGB
+      // YUV to RGB integer conversion
       int r = (yp + (1.370705 * (vp - 128))).round();
       int g = (yp - (0.337633 * (up - 128)) - (0.698001 * (vp - 128))).round();
       int b = (yp + (1.732446 * (up - 128))).round();
 
-      if (r < 0) r = 0;
-      else if (r > 255) r = 255;
-      if (g < 0) g = 0;
-      else if (g > 255) g = 255;
-      if (b < 0) b = 0;
-      else if (b > 255) b = 255;
+      r = r.clamp(0, 255);
+      g = g.clamp(0, 255);
+      b = b.clamp(0, 255);
 
-      // normalize to [-1,1] (model expects that)
-      tensor[ti++] = (r / 127.5) - 1.0;
-      tensor[ti++] = (g / 127.5) - 1.0;
-      tensor[ti++] = (b / 127.5) - 1.0;
+      // For uint8 model: push raw 0..255 values (RGB)
+      tensor[ti++] = r;
+      tensor[ti++] = g;
+      tensor[ti++] = b;
     }
   }
 
