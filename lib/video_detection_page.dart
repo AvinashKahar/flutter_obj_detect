@@ -22,6 +22,9 @@ class _VideoDetectionPageState extends State<VideoDetectionPage> {
   bool _isDetecting = false;
   List<DetectionResult> _detections = [];
 
+  // 🔹 Added: timestamp for frame throttle
+  DateTime? _lastInferenceTime;
+
   @override
   void initState() {
     super.initState();
@@ -31,6 +34,7 @@ class _VideoDetectionPageState extends State<VideoDetectionPage> {
   Future<void> _initCamera() async {
     final cameras = await availableCameras();
     final camera = cameras.first;
+
     _cameraController = CameraController(camera, ResolutionPreset.medium, enableAudio: false);
     await _cameraController!.initialize();
 
@@ -38,6 +42,17 @@ class _VideoDetectionPageState extends State<VideoDetectionPage> {
     await _cameraController!.startImageStream((CameraImage img) async {
       if (_isDetecting) return;
       _isDetecting = true;
+
+
+      // 🔹 Added: frame rate throttle (~1 inference every 400ms)
+      final now = DateTime.now();
+      if (_lastInferenceTime != null && now.difference(_lastInferenceTime!) < const Duration(milliseconds: 1000)) {
+        _isDetecting = false;
+        return; // skip this frame to keep preview smooth
+      }
+      _lastInferenceTime = now;
+
+
       try {
         // Convert camera Image via compute (this map returns Uint8List now)
         final preprocessStart = DateTime.now().millisecondsSinceEpoch;
@@ -91,6 +106,11 @@ class _VideoDetectionPageState extends State<VideoDetectionPage> {
           // b format assumed [ymin, xmin, ymax, xmax]
           final rect = Rect.fromLTRB(b[1], b[0], b[3], b[2]);
           results.add(DetectionResult(rect, label, score));
+        }
+
+        for(var data in results){
+          debugPrint('$TAG Detection: ${data.label} ${(data.confidence * 100).toStringAsFixed(1)}% ${data.rect}');
+          FileLogger.log("$TAG Detection: ${data.label} ${(data.confidence * 100).toStringAsFixed(1)}% ${data.rect}");
         }
 
         debugPrint('$TAG Detections: ${results.length}');

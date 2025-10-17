@@ -106,8 +106,8 @@ class ObjectDetection {
     }
 
     // Build nested input [1][H][W][C] with int values (0..255)
-    const int H = 448;
-    const int W = 448;
+    const int H = 320;
+    const int W = 320;
     const int C = 3;
     int idx = 0;
     final input = List.generate(1, (_) {
@@ -212,7 +212,7 @@ Map<String, dynamic> runConvertCameraImageToMatrix(Map<String, dynamic> params) 
   final int row1 = params['row1'] as int;
   final int pixelStride1 = params['pixelStride1'] as int;
 
-  const int dstSize = 448;
+  const int dstSize = 320;
   final Uint8List tensor = Uint8List(dstSize * dstSize * 3);
   int ti = 0;
 

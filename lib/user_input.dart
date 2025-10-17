@@ -24,7 +24,8 @@ class _UserInputState extends State<UserInput> {
   void initState() {
     super.initState();
     SchedulerBinding.instance.addPostFrameCallback((_) async {
-      ctrModelController.text = "efficientdet_lite2";
+      //ctrModelController.text = "efficientdet_lite2";
+      ctrModelController.text = "efficientdet_320x320";
       ctrLabelController.text = "labelmap";
     });
   }
